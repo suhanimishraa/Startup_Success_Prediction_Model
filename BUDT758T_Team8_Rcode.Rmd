@@ -1,0 +1,794 @@
+---
+title: "Group_Project_Code: Predicting Startup Success"
+author: "BUDT758T_Team 8-Rahil Pereira, Rohit Jadhav, Suhani Mishra, Sahiti Nadimpalli, Aniela Skibniewska"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+```
+
+#Load Data
+```{r}
+##add file path before file name
+df<-read.csv("BUDT758T_Team8_Data.csv")
+attach(df)
+```
+
+#check for NAs
+```{r}
+df %>%
+  select(everything()) %>%
+  summarise_all(funs(sum(is.na(.))))
+```
+#Treat NA values
+```{r}
+df$age_first_milestone_year = ifelse(is.na(df$age_first_milestone_year),
+                  0,df$age_first_milestone_year)
+
+df$age_last_milestone_year = ifelse(is.na(df$age_last_milestone_year),
+                    0,df$age_last_milestone_year)
+```
+
+#Temporal Extraction
+```{r}
+df$founded_Year<-as.integer(format(as.Date(df$founded_at,format="%m/%d/%Y"),"%Y"))
+df$firstfunded_Year<-as.integer(format(as.Date(df$first_funding_at,format="%m/%d/%Y"),"%Y"))
+df$lastfunded_Year<-as.integer(format(as.Date(df$last_funding_at,format="%m/%d/%Y"),"%Y"))
+
+#df %>%
+#  select(founded_at,founded_Year, first_funding_at,firstfunded_Year, last_funding_at,lastfunded_Year)
+  
+```
+
+#Remove Attributes
+```{r}
+df<-subset(df, select = -c(Unnamed..0, latitude, longitude, zip_code, id, city, Unnamed..6, name, labels, founded_at, closed_at, first_funding_at,last_funding_at, state_code.1, object_id))
+```
+
+#Logistic Regression
+
+
+###Logistic Data Prep
+```{r}
+df_log<- df
+df_log$status<-factor(df_log$status,levels=c("closed","acquired"))
+
+df_log$state_code<-factor(df_log$state_code)
+df_log$category_code<- factor(df_log$category_code)
+df_log$has_VC<-factor(df_log$has_VC)
+df_log$has_angel<-factor(df_log$has_angel)
+df_log$series_A<-factor(df_log$series_A)
+df_log$series_B<-factor(df_log$series_B)
+df_log$series_C<-factor(df_log$series_C)
+df_log$series_D<-factor(df_log$series_D)
+df_log$is_top500<-factor(df_log$is_top500)
+
+set.seed(13)
+train<- sample(nrow(df_log), 0.7*nrow(df_log))
+df_log_train<-df_log[train,] 
+df_log_test<-df_log[-train,]
+```
+
+###Base Logistic Model
+```{r}
+model_log<-glm(status~.,data=df_log_train, family = "binomial")
+summary(model_log)
+```
+
+###Logistic Model after variable selection
+```{r}
+model_log1<-glm(status~relationships+age_last_milestone_year+milestones+has_VC+series_B+series_D+is_top500,
+                data=df_log_train, family = "binomial")
+summary(model_log1)
+```
+###Finding Accuracy Maximizing Cutoff
+```{r}
+predicted.probability.train_log <-predict(model_log1,type="response")
+ActualTrain_log <- df_log_train$status
+
+S <- seq(0,1,length = nrow(df_log_train))
+ACC <- numeric(nrow(df_log_train))
+SEN <- numeric(nrow(df_log_train))
+SPEC <- numeric(nrow(df_log_train))
+
+for (i in 1:nrow(df_log_train))
+{
+cutoff = S[i]
+PredictedTrain <- ifelse(predicted.probability.train_log>cutoff,"acquired","closed")
+ACC[i] = sum(ActualTrain_log == PredictedTrain)/nrow(df_log_train)
+SEN[i] <- sum(predicted.probability.train_log > cutoff &
+ActualTrain_log == "acquired")/sum(ActualTrain_log == "acquired")
+SPEC[i] <- sum(predicted.probability.train_log <= cutoff &
+ActualTrain_log == "closed")/sum(ActualTrain_log == "closed")
+}
+plot(S,ACC,type="o", col="cyan", main='accuracy on training data')
+
+cutoff <- S[which.max(ACC)]
+cat('The accuracy maximizing cutoff is:', cutoff, '\n\n')
+
+abline(v=cutoff, col="magenta", lty=2)
+
+cat('The maximum accuracy is:', ACC[which.max(ACC)], '\n')
+# It is also useful to see how sensitivity and specificity change with the cutoff
+plot(S, SEN, type="l",col="green", lty=2)
+lines(S, SPEC, type="l",col="blue", lty=2)
+lines(S,ACC, col="cyan", lty=2) #PAGE 83-84
+```
+
+###Using accuracy maximizing cutoff on test data
+```{r}
+ActualTest_log <- df_log_test$status 
+predicted.probability.test_log <- predict(model_log1, newdata = df_log_test, type='response') #run model on test data
+PredictedTest_log <- ifelse(predicted.probability.test_log > cutoff, "acquired", "closed") #make predictions
+PredictedTest_log <- factor(PredictedTest_log,levels = c("closed","acquired")) #success class is second
+(confusionTest_log <- table(ActualTest_log, PredictedTest_log))
+
+#confusion matrix for test
+(accuracyTest_log<-(confusionTest_log[1,1]+confusionTest_log[2,2])/
+    sum(confusionTest_log))
+(errorTest_log<-1-accuracyTest_log)
+```
+
+###ROC
+```{r}
+library(pROC)
+par(pty="s")
+
+roc_rose <- plot(roc(ActualTrain_log, predicted.probability.train_log),print.auc = TRUE, col = "blue", xlab="1-Specificity")
+
+## Next, the additional argument "add = TRUE" adds the test ROC to the previous plot
+roc_rose <- plot(roc(ActualTest_log, predicted.probability.test_log), print.auc = TRUE, col = "green", print.auc.y = .4, add = TRUE)
+
+```
+
+###Lift Charts 
+```{r}
+#TRAINING
+actual <- as.numeric(df_log_train$status)-1
+
+# Create a data frame with the probability and the actual class
+# Then sort it and save as a new data frame
+df_log1 <- data.frame(predicted.probability.train_log,actual,df_log_train$status)
+df_log1 <- df_log1[order(-predicted.probability.train_log),] ## Sorted by probability (descending)
+#
+# Create a new variable in the sorted data frame which is the cumulative of Actual
+
+# Plot this cumulative variable (the X-axis can be interpreted as the cumulative)
+# number of cases
+df_log1$Lift <- cumsum(df_log1$actual)
+plot(df_log1$Lift,type="n",main="Lift Chart: Training",xlab="Number of Cases",ylab="Cumulative Success")
+lines(df_log1$Lift)
+abline(0,sum(df_log1$actual)/nrow(df_log1),lty = 2, col="red")
+```
+
+```{r}
+#TEST
+## We need status as a dummy variable to get cumulative successes
+actual <- as.numeric(df_log_test$status)-1
+
+# Create a data frame with the probability and the actual class
+# Then sort it and save as a new data frame
+df_log2 <- data.frame(predicted.probability.test_log,actual,df_log_test$status)
+df_log2 <- df_log2[order(-predicted.probability.test_log),] ## Sorted by probability (descending)
+#
+# Create a new variable in the sorted data frame which is the cumulative of Actual
+# Plot this cumulative variable (the X-axis can be interpreted as the cumulative)
+# number of cases
+df_log2$Lift <- cumsum(df_log2$actual)
+plot(df_log2$Lift,type="n",main="Lift Chart: Test",xlab="Number of Cases",ylab="Cumulative Success")
+lines(df_log2$Lift)
+abline(0,sum(df_log2$actual)/nrow(df_log2),lty = 2, col="red")
+```
+
+###Decile Lift-Train
+```{r}
+actual <- as.numeric(df_log_train$status)-1
+df_log1 <- data.frame(predicted.probability.train_log,actual,df_log_train$status)
+df_log1 <- df_log1[order(-predicted.probability.train_log),] ## Sorted by probability
+
+decile_Lift <- function(df_log1) {
+#Sort the dataframe
+df_log1 <- df_log1[order(-df_log1$predicted.probability.train_log),]
+
+#Add rownumbers
+df_log1$roworder <- 1:nrow(df_log1)
+
+#Create a variable that holds the baseline successes for each decile
+baseline <- sum(df_log1$actual) / 10
+
+#Assign decile
+df_log1$decile <- ceiling((df_log1$roworder / nrow(df_log1)) * 10)
+
+#Count successes in each decile
+library("data.table")
+dt <- data.table(df_log1)
+dt <- dt[, sum(actual), by = decile]
+dt$baseline <- baseline
+
+#Plot bargraph
+barplot(t(data.frame(dt$V1,dt$baseline)),
+main="Decile wise comparision of successes: Training",
+xlab="Deciles", col=c("darkblue","red"),
+beside=TRUE, names=dt$decile)
+barplot(t(data.frame(dt$V1)/data.frame(dt$baseline)),
+main="Ratio of successes vs. random selection: Training", xlab="Deciles", col=c("darkblue"), beside=TRUE, names=dt$decile)
+}
+decile_Lift(df_log1) #page 91
+```
+
+###Decile Lift- Test
+```{r}
+actual <- as.numeric(df_log_test$status)-1
+df_log2 <- data.frame(predicted.probability.test_log,actual,df_log_test$status)
+df_log2 <- df_log2[order(-predicted.probability.test_log),] ## Sorted by probability
+
+decile_Lift <- function(df_log2) {
+#Sort the dataframe
+df_log2 <- df_log2[order(-df_log2$predicted.probability.test_log),]
+
+#Add rownumbers
+df_log2$roworder <- 1:nrow(df_log2)
+
+#Create a variable that holds the baseline successes for each decile
+baseline <- sum(df_log2$actual) / 10
+
+#Assign decile
+df_log2$decile <- ceiling((df_log2$roworder / nrow(df_log2)) * 10)
+
+#Count successes in each decile
+library("data.table")
+dt <- data.table(df_log2)
+dt <- dt[, sum(actual), by = decile]
+dt$baseline <- baseline
+
+#Plot bargraph
+barplot(t(data.frame(dt$V1,dt$baseline)),
+main="Decile wise comparision of successes: Test",
+xlab="Deciles", col=c("darkblue","red"),
+beside=TRUE, names=dt$decile)
+barplot(t(data.frame(dt$V1)/data.frame(dt$baseline)),
+main="Ratio of successes vs. random selection: Test", xlab="Deciles", col=c("darkblue"), beside=TRUE, names=dt$decile)
+}
+decile_Lift(df_log2) #page 91
+```
+
+###LASSO
+```{r}
+library(glmnet)
+
+x=model.matrix(status~age_last_milestone_year+milestones+has_VC+series_B+series_D+is_top500,df_log_train)[,-1] 
+y <- ifelse(df_log_train$status == "acquired", 1, 0)
+
+#base model
+lasso <- glmnet(x, y, alpha=1, family="binomial") 
+
+# Plot variable coefficients vs. shrinkage parameter lambda.
+plot(lasso, xvar="lambda")
+
+#perform k-fold cross-validation to find optimal lambda value
+cv.lasso <- cv.glmnet(x, y, alpha= 1, family="binomial")
+plot(cv.lasso)
+(best.lambda <- cv.lasso$lambda.min)
+```
+
+```{r}
+#create model on minimum lambda
+optimal_lasso <- glmnet(x, y, alpha = 1, family = "binomial",
+                lambda = cv.lasso$lambda.min)
+
+# Make predictions on the test data
+x.test <- model.matrix(status ~age_last_milestone_year+milestones+has_VC+series_B+series_D+is_top500, df_log_test)[,-1]
+
+#create probabilities
+probabilities <- optimal_lasso %>%  
+  predict(newx = x.test)
+
+predicted.classes <- ifelse(probabilities > cutoff, "acquired", "closed")
+
+# Model accuracy
+observed.classes <- df_log_test$status
+mean(predicted.classes == observed.classes)
+```
+
+###DECISION TREE
+```{r}
+df_tree<- df
+df_tree<-na.omit(df_tree)
+
+#Changing data types
+df_tree$status<-factor(df_tree$status,levels=c("closed","acquired"))
+df_tree$state_code<- NULL #as.factor(df_tree$state_code)
+df_tree$category_code<- NULL #as.factor(df_tree$category_code)
+df_tree$has_VC<-factor(df_tree$has_VC)
+df_tree$has_angel<-factor(df_tree$has_angel)
+df_tree$series_A<-factor(df_tree$series_A)
+df_tree$series_B<-factor(df_tree$series_B)
+df_tree$series_C<-factor(df_tree$series_C)
+df_tree$series_D<-factor(df_tree$series_D)
+df_tree$is_top500<-factor(df_tree$is_top500)
+
+#Splitting the data
+set.seed(13)
+inTrain <- sample(nrow(df_tree), 0.5*nrow(df_tree))
+train <- data.frame(df_tree[inTrain,])
+temp <- data.frame(df_tree[-inTrain,])
+inTrain2 <- sample(nrow(temp), 0.5*nrow(temp))
+validation <- data.frame(temp[inTrain2,])
+test <- data.frame(temp[-inTrain2,])
+rm(temp)
+```
+
+###Decision Tree Model
+```{r}
+library(tree)
+tree.startups2=tree(status~.,train)
+
+# To predict on the test set
+tree.pred=predict(tree.startups2,test,type="class")
+
+#CROSSVALIDATION ON TREE
+cv.startups=cv.tree(tree.startups2,FUN=prune.misclass)
+names(cv.startups)
+```
+
+###Plotting the Tree
+```{r}
+plot(cv.startups$size,cv.startups$dev,type="b")
+prune.startups2=prune.misclass(tree.startups2,best=3)
+plot(prune.startups2)
+text(prune.startups2,pretty=0)
+```
+
+###Accuracy
+```{r}
+tree.pred=predict(prune.startups2,test,type="class")
+CM = table(test$status,tree.pred)
+(Acc = (CM[1,1]+CM[2,2])/sum(CM))
+```
+
+###BAGGING
+```{r}
+df_bag<- df
+df_bag<-na.omit(df_bag)
+
+#Changing data type
+df_bag$status<-factor(df_bag$status,levels=c("closed","acquired"))
+df_bag$state_code<-as.factor(df_bag$state_code)
+df_bag$category_code<-as.factor(df_bag$category_code)
+
+#Splitting the data
+set.seed(13)
+bag_train<- sample(nrow(df_bag), 0.7*nrow(df_bag))
+df_bag_train<-df_bag[bag_train,] 
+df_bag_test<-df_bag[-bag_train,]
+```
+
+###Training the Model
+```{r}
+library(randomForest)
+bag.success =randomForest(status~.,data=df_bag_train,mtry=20, importance = TRUE)
+bag.success
+```
+
+###Making Predictions
+```{r}
+yPred.bag = predict(bag.success,newdata = df_bag_test)
+plot(yPred.bag, df_bag_test$status)
+
+# To check important variables
+importance(bag.success)      
+varImpPlot(bag.success)
+```
+
+###Check for optimal number of trees and splits
+```{r}
+ntree <-c(50,100,200,500,1000)
+Accuracy_bagging = NULL
+set.seed(13)
+for (i in ntree){
+  bag.success.comp =randomForest(status~.,data=df_bag_train,mtry=20, nTree=i, importance = TRUE) 
+  yPred.bag.comp = predict(bag.success.comp,newdata = df_bag_test)
+  aux =  mean(yPred.bag.comp == df_bag_test$status)
+  # get a list of accuracy rates 
+  Accuracy_bagging = c(Accuracy_bagging,aux)
+}
+
+# plot number of trees versus accuracy rates
+plot(ntree, Accuracy_bagging,type="b",xlab="ntree",col="blue",ylab="Accuracy",lwd=2,cex.lab=1.2, main = "ntree vs. Accuracy")
+
+# get highest accuracy rate
+Accuracy_bagging[which.max(Accuracy_bagging)]
+
+#Confusion Matrix
+(bag_confusion <- table(df_bag_test$status,yPred.bag.comp,dnn=list('actual','predicted')))
+
+#Accuracy
+(acc = (bag_confusion[1,1]+bag_confusion[2,2])/sum(bag_confusion))
+which.max(Accuracy_bagging)
+```
+
+###Training model with the optimal number of trees
+```{r}
+set.seed(13)
+model_bagging<-randomForest(status~.,data=df_bag_train,ntree=100,mtry=20,importance=TRUE)
+
+# To check important variables
+importance(model_bagging)      
+varImpPlot(model_bagging)
+```
+###Prediction using optimal number of trees and splits
+```{r}
+yPred.bag.opt = predict(model_bagging, newdata = df_bag_test)
+plot(yPred.bag.opt, df_bag_test$status)
+
+#Confusion Matrix
+(bag_confusion <- table(df_bag_test$status,yPred.bag.opt,dnn=list('actual','predicted')))
+
+#Accuracy
+(acc = (bag_confusion[1,1]+bag_confusion[2,2])/sum(bag_confusion))
+```
+
+###RANDOM FOREST
+```{r}
+set.seed(13)
+ntr<-c(50,200,500,2000,5000)
+max_acc=0
+# Training model with different number of trees and splits to get the optimal values for each
+for (n in ntr){
+  a=c()
+  i=13
+  for (i in 13:19) {
+    model_rf <- randomForest(status~., data = df_bag_train, ntree = n, mtry = i, importance = TRUE)
+    predValid <- predict(model_rf, df_bag_test, type = "class")
+    a[i-12] = mean(predValid == df_bag_test$status)
+    if (a[i-12]>max_acc){
+      max_acc=a[i-12]
+      opt_tree=n
+      opt_m=i
+    }
+  }
+  print(paste0('Number of trees: ',n))
+  print(a)
+}
+```
+
+###Training model with the optimal number of trees and splits
+```{r}
+model_rf<-randomForest(status~.,data=df_bag_train,ntree=opt_tree,mtry=opt_m,importance=TRUE)
+
+# To check important variables
+importance(model_rf)      
+
+# plotting the importance of predictors
+varImpPlot(model_rf) 
+```
+
+###Predict using optimal number of trees and splits
+```{r}
+yPred.RF = predict(model_rf, newdata = df_bag_test)
+plot(yPred.RF, df_bag_test$status)
+
+#Confusion matrix
+(rf_confusion <- table(df_bag_test$status, yPred.RF, dnn=list('actual','predicted')))
+
+#Accuracy
+(acc = (rf_confusion[1,1]+rf_confusion[2,2])/sum(rf_confusion))
+```
+
+###BOOSTING
+```{r}
+library(gbm)
+ntrees = c(50,100,150,200,250)
+max_acc = 0
+
+#Converting dependent variable classes to 1 and 0
+df_bag_train$new_status <- ifelse(df_bag_train$status=="acquired",1,0)
+df_bag_test$new_status <- ifelse(df_bag_test$status=="acquired",1,0)
+
+#Checking for optimal number of trees
+for (i in ntrees) {
+boostfit = gbm(new_status~.-status,data=df_bag_train,distribution='bernoulli',interaction.depth=5,n.trees=i,shrinkage=.01)
+yPred.boost = predict(boostfit, n.trees=i, type = 'response')
+predicted = ifelse(yPred.boost>=0.5,1,0)
+y.train <- df_bag_train$new_status
+c = table(predicted, y.train)
+(acc = (c[1,1]+c[2,2])/sum(c))
+if (acc > max_acc) {
+  max_acc = acc
+  opt_trees = i
+}
+}
+
+print(max_acc)
+print(opt_trees)
+summary(boostfit)
+```
+
+###Predicting test data with optimal number of trees 
+```{r}
+yPred.boost.train = predict(boostfit,newdata=df_bag_train,n.trees=opt_trees, type = 'response')
+yPred.boost.test = predict(boostfit,newdata=df_bag_test,n.trees=250, type = 'response')
+
+predicted = ifelse(yPred.boost.test>=0.5,1,0) #To classify probabilities greater than 50% as '1'
+
+actual <- df_bag_test$new_status #Actual value
+
+#Confusion matrix
+(c = table(predicted, actual))
+
+#Accuracy
+(acc = (c[1,1]+c[2,2])/sum(c))
+```
+
+###Boosting Lift chart
+```{r}
+# The first column is class 0, the second is class 1
+PL <- as.numeric(df_bag_test$status)-1
+prob <- yPred.boost.test
+df1 <- data.frame(predicted, PL, prob)
+
+df1S <- df1[order(-prob),]
+df1S$Gains <- cumsum(df1S$PL)
+
+plot(df1S$Gains,type="n",main="Lift Chart - Test",xlab="Number of Cases",ylab="Cumulative Success")
+lines(df1S$Gains,col="blue")
+abline(0,sum(df1S$PL)/nrow(df1S),lty = 2, col="red")
+```
+
+###Boosting ROC
+```{r}
+library(pROC)
+par(pty="s")
+
+roc_rose <- plot(roc(df_bag_train$status, yPred.boost.train),print.auc = TRUE, col = "blue", xlab="1-Specificity")
+
+## The additional argument "add = TRUE" adds the test ROC to the previous plot
+roc_rose <- plot(roc(df_bag_test$status, yPred.boost.test), print.auc = TRUE, col = "green", print.auc.y = .4, add = TRUE)
+```
+
+###NAIVE BAYES
+```{r}
+df_nb <- df
+
+#Converting dependent variable classes to 1 and 0
+df_nb$status <- ifelse(df_nb$status == 'acquired',1,0)
+
+#Converting data types to factor
+df_nb$state_code <- as.factor(df_nb$state_code)
+df_nb$category_code <- as.factor(df_nb$category_code)
+df_nb$has_VC<-as.factor(df_nb$has_VC)
+df_nb$has_angel<-as.factor(df_nb$has_angel)
+df_nb$series_A<-as.factor(df_nb$series_A)
+df_nb$series_B<-as.factor(df_nb$series_B)
+df_nb$series_C<-as.factor(df_nb$series_C)
+df_nb$series_D<-as.factor(df_nb$series_D)
+df_nb$is_top500<-as.factor(df_nb$is_top500)
+df_nb$status <- as.factor(df_nb$status) #Converting dependent variable to factor type
+
+#Splitting the data
+set.seed(13)
+train<- sample(nrow(df_nb), 0.7*nrow(df_nb))
+nb_train<-df_nb[train,] 
+nb_test<-df_nb[-train,]
+```
+
+###Training the base model
+```{r}
+library(e1071)
+model_nb <- naiveBayes(status~., data=nb_train)
+model_nb
+```
+
+###Predicting test data using base model
+```{r}
+prediction <- predict(model_nb, newdata = nb_test[,-18])
+
+#Confusion matrix
+(nb_confusion <- table(nb_test$status,prediction,dnn=list('actual','predicted')))
+
+#Accuracy
+(acc = (nb_confusion[1,1]+nb_confusion[2,2])/sum(nb_confusion))
+```
+
+###Base model with feature selection
+```{r}
+model_nb <- naiveBayes(status~relationships+age_last_milestone_year+milestones+has_VC+series_B+series_D+is_top500, data=nb_train)
+model_nb
+```
+
+###Predicting test data using base model with feature selection
+```{r}
+prediction <- predict(model_nb, newdata = nb_test[,-18])
+
+#Confusion matrix
+(nb_confusion <- table(nb_test$status,prediction,dnn=list('actual','predicted')))
+
+#Accuracy
+(acc = (nb_confusion[1,1]+nb_confusion[2,2])/sum(nb_confusion))
+```
+
+###Lift chart
+```{r}
+# For class probabilities
+nb.probability.train <- predict(model_nb, newdata = nb_train[,-18],type="raw")
+nb.probability.test <- predict(model_nb, newdata = nb_test[,-18], type="raw")
+
+# The first column is class 0, the second is class 1
+PL <- as.numeric(nb_test$status)-1
+prob <- nb.probability.test[,2]
+df1 <- data.frame(prediction, PL, prob)
+
+df1S <- df1[order(-prob),]
+df1S$Gains <- cumsum(df1S$PL)
+
+plot(df1S$Gains,type="n",main="Lift Chart",xlab="Number of Cases",ylab="Cumulative Success")
+lines(df1S$Gains,col="blue")
+abline(0,sum(df1S$PL)/nrow(df1S),lty = 2, col="red")
+```
+
+###Naive Bayes ROC
+```{r}
+library(pROC)
+par(pty="s")
+
+roc_rose <- plot(roc(nb_train$status, nb.probability.train[,1]),print.auc = TRUE, col = "blue", xlab="1-Specificity")
+
+## Next, the additional argument "add = TRUE" adds the test ROC to the previous plot
+roc_rose <- plot(roc(nb_test$status, nb.probability.test[,1]), print.auc = TRUE, col = "green", print.auc.y = .4, add = TRUE)
+```
+
+# KNN
+
+###KNN Data Preparation
+```{r}
+# Making the status into a numerical variable 
+df$status <- ifelse(df$status == "acquired", 1, 0)
+
+# installing the fastDummies package for creating dummy variables
+#install.packages("fastDummies")
+library(fastDummies)
+
+# creating a new df with dummies for state_code, funding_rounds, milestones, category_code 
+dfdummies <- dummy_cols(df, select_columns = c("state_code", "funding_rounds", "milestones", "category_code"), remove_first_dummy = FALSE)
+
+# getting rid of the original columns for state_code, milestones, category code
+dfdummies<-subset(dfdummies, select=-c(state_code, milestones, category_code))
+
+knndf <- na.omit(dfdummies)
+sum(is.na(knndf))
+
+# normalizing the data for everything except "status" (14th column)
+fun <- function(x){ 
+  a <- mean(x) 
+  b <- sd(x) 
+  (x - a)/(b) 
+} 
+
+knndf[,1:14] <- apply(knndf[,1:14], 2, fun)
+knndf[,16:96] <- apply(knndf[,16:96], 2, fun)
+
+# splitting the data into training and validation sets
+library("caret")
+set.seed(12345)
+train <- sample(nrow(knndf), 0.7*nrow(knndf))
+dftrain <- knndf[train,]
+dfvalid <- knndf[-train,]
+
+sum(is.na(train))
+sum(is.na(dftrain))
+sum(is.na(dfvalid))
+```
+
+###Running the KNN Algorithm
+```{r}
+# loading the required library
+library(class)
+
+# putting everything into matrix form
+train_input <- as.matrix(dftrain[,-15])
+# output variables
+# turn the labels into a vector
+train_output <- as.vector(dftrain[,15])
+validate_input <- as.matrix(dfvalid[,-15])
+
+#doing the knn. Guessing that the min is less than 15. 
+kmax <- 15
+# two vectors. First stores training errors. Second stores validation errors
+ER1 <- rep(0,kmax)
+ER2 <- rep(0,kmax)
+```
+
+###KNN Confusion Tables
+```{r}
+for (i in 1:kmax){
+prediction <- knn(train_input, train_input, train_output, k=i)
+prediction2 <- knn(train_input, validate_input, train_output, k=i)
+
+# The confusion matrix for training data is:
+CM1 <- table(dftrain$status,prediction)
+# The training error rate is:
+ER1[i] <- (CM1[1,2]+CM1[2,1])/sum(CM1)
+
+# The confusion matrix for validation data is:
+CM2 <- table(dfvalid$status,prediction2)
+ER2[i] <- (CM2[1,2]+CM2[2,1])/sum(CM2)
+}
+```
+
+### Training Data Confusion Table
+```{r}
+CM1
+```
+
+### Validation Data Confusion Table
+```{r}
+CM2
+```
+
+###KNN Error rate plot
+```{r}
+plot(c(1,kmax),c(0,0.5),type="n", xlab="K",ylab="Error Rate")
+lines(ER1,col="red")
+lines(ER2,col="blue")
+legend(11, 0.5, c("Training","Validation"),lty=c(1,1), col=c("red","blue"))
+```
+
+###Find the k to minimize the validation error
+```{r}
+z <- which.min(ER2)
+z
+```
+
+### creating the plot again with a line at the k with minimum validation error
+```{r}
+plot(c(1,kmax),c(0,0.5),type="n", xlab="K",ylab="Error Rate")
+lines(ER1,col="red")
+lines(ER2,col="blue")
+legend(11, 0.5, c("Training","Validation"),lty=c(1,1), col=c("red","blue"))
+abline(v=z, col="gray", lty=2)
+```
+
+### Training error rate at the optimal k:
+```{r}
+ER1[z]
+```
+
+### Validation error rate at the optimal k:
+```{r}
+ER2[z]
+```
+
+### Accuracy rate for validation data at the optimal k:
+```{r}
+1 - ER2[z]
+```
+
+### Creating the KNN Lift Chart
+```{r}
+# Now we compute the lift curve for k=z.
+prediction3 <- knn(train_input, validate_input, train_output, k=z, prob=T)
+#
+predicted.probability <- attr(prediction3, "prob")
+# We need P(Success). So we need to correct for this ...
+predicted.probability <- ifelse(prediction3 =="1", predicted.probability, 1-predicted.probability)
+#
+df1 <- data.frame(prediction3, predicted.probability,dfvalid$status)
+
+df1S <- df1[order(-predicted.probability),]
+df1S$Gains <- cumsum(df1S$dfvalid.status)
+```
+
+### Plotting the KNN Lift Chart
+```{r}
+plot(df1S$Gains,type="n",main="Lift Chart",xlab="Number of Cases",ylab="Cumulative Success")
+lines(df1S$Gains,col="blue")
+abline(0,sum(df1S$dfvalid.status)/nrow(df1S),lty = 2, col="red")
+```
